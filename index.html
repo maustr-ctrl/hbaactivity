@@ -1245,8 +1245,17 @@ async function odWrite(path, data) {
 async function connectOneDrive() {
   setOdStatus(false, 'Connessione…');
   try {
-    await initMsal();
+    const ok = await initMsal();
+    if (!ok || !msalInstance) throw new Error('Inizializzazione MSAL fallita');
+
+    // Login popup if no account
+    const accounts = msalInstance.getAllAccounts();
+    if (!accounts.length) {
+      await msalInstance.loginPopup({ scopes: OD_CONFIG.scopes });
+    }
+
     const token = await getOdToken();
+
     // Get user info
     const userRes = await fetch('https://graph.microsoft.com/v1.0/me', {
       headers: { 'Authorization': 'Bearer ' + token }
@@ -1254,7 +1263,8 @@ async function connectOneDrive() {
     const user = await userRes.json();
     odConnected = true;
     setOdStatus(true, user.displayName || 'Connesso');
-    showToast('✓ Connesso a OneDrive come ' + (user.displayName || user.mail));
+    showToast('✓ Connesso come ' + (user.displayName || user.mail));
+
     // Load data from OneDrive
     await loadFromOneDrive();
     renderCurrentView();
@@ -1262,6 +1272,7 @@ async function connectOneDrive() {
     odConnected = false;
     setOdStatus(false, 'Non connesso');
     showToast('Errore: ' + e.message, true);
+    console.error('connectOneDrive error:', e);
   }
 }
 
