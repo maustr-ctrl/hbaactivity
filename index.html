@@ -1150,14 +1150,14 @@ function initMsal() {
     if (msalInstance) { resolve(true); return; }
 
     const s = document.createElement('script');
-    s.src = 'https://unpkg.com/@azure/msal-browser@3.5.0/dist/index.umd.min.js';
+    s.src = 'https://cdn.jsdelivr.net/npm/@azure/msal-browser@2.38.3/dist/msal-browser.min.js';
 
     s.onload = async () => {
       try {
-        // MSAL v3 exposes itself as window.msalBrowser
-        const msalLib = window.msalBrowser;
+        // MSAL v2 exposes itself as window.msal
+        const msalLib = window.msal;
         if (!msalLib || !msalLib.PublicClientApplication) {
-          throw new Error('MSAL v3 non trovato — namespace: ' + Object.keys(window).filter(k=>k.includes('msal')).join(', '));
+          throw new Error('MSAL non trovato. Namespace disponibili: ' + Object.keys(window).filter(k=>k.toLowerCase().includes('msal')).join(', ') || 'nessuno');
         }
         const config = {
           auth: {
