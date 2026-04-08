@@ -1131,104 +1131,174 @@ function updateSideCount() {
 // (requires MSAL + Graph API configured in your Azure tenant)
 // ============================================================
 let odConnected = false;
-let msalInstance = null;
 let _odToken = null;
 let _odTokenExpiry = 0;
 
 const OD_CONFIG = {
-  clientId: '09b87861-dbe9-4cb6-8913-15932aa27ba8',
-  authority: 'https://login.microsoftonline.com/common',
+  clientId:    '09b87861-dbe9-4cb6-8913-15932aa27ba8',
   redirectUri: 'https://maustr-ctrl.github.io/hbaactivity/',
-  scopes: ['Files.ReadWrite', 'User.Read'],
+  scopes:      'Files.ReadWrite User.Read offline_access',
   repairsPath: 'HbaActivity/repairs.json',
-  logPath:     'HbaActivity/log.json',
+  authEndpoint: 'https://login.microsoftonline.com/common/oauth2/v2.0',
 };
 
-// ── MSAL INIT ────────────────────────────────────────────────
-function initMsal() {
-  return new Promise((resolve) => {
-    if (msalInstance) { resolve(true); return; }
-
-    const s = document.createElement('script');
-    s.src = 'https://cdn.jsdelivr.net/npm/@azure/msal-browser@2.38.3/dist/msal-browser.min.js';
-
-    s.onload = async () => {
-      try {
-        console.log('MSAL script caricato. window.msal:', typeof window.msal, 'window.msalBrowser:', typeof window.msalBrowser);
-        // MSAL v2 exposes itself as window.msal
-        const msalLib = window.msal;
-        if (!msalLib || !msalLib.PublicClientApplication) {
-          console.log('Chiavi window con msal:', Object.keys(window).filter(k=>k.toLowerCase().includes('msal')));
-          throw new Error('MSAL non trovato. Namespace disponibili: ' + Object.keys(window).filter(k=>k.toLowerCase().includes('msal')).join(', ') || 'nessuno');
-        }
-        console.log('MSAL trovato, creo istanza...');
-        const config = {
-          auth: {
-            clientId: OD_CONFIG.clientId,
-            authority: OD_CONFIG.authority,
-            redirectUri: OD_CONFIG.redirectUri
-          },
-          cache: {
-            cacheLocation: 'sessionStorage',
-            storeAuthStateInCookie: false
-          }
-        };
-        msalInstance = new msalLib.PublicClientApplication(config);
-        await msalInstance.initialize();
-        await msalInstance.handleRedirectPromise();
-        resolve(true);
-      } catch(e) {
-        console.error('MSAL init error:', e);
-        setOdStatus(false, 'Errore MSAL: ' + e.message);
-        showToast('Errore MSAL: ' + e.message, true);
-        resolve(false);
-      }
-    };
-
-    s.onerror = (e) => {
-      console.error('MSAL load error:', e);
-      setOdStatus(false, 'Libreria MSAL non caricata');
-      showToast('Libreria MSAL non caricata', true);
-      resolve(false);
-    };
-
-    document.head.appendChild(s);
-  });
+// ── PKCE HELPERS ─────────────────────────────────────────────
+async function pkceChallenge() {
+  const arr = new Uint8Array(32);
+  crypto.getRandomValues(arr);
+  const verifier = btoa(String.fromCharCode(...arr)).replace(/\+/g,'-').replace(/\//g,'_').replace(/=/g,'');
+  const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier));
+  const challenge = btoa(String.fromCharCode(...new Uint8Array(hash))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=/g,'');
+  return { verifier, challenge };
 }
 
-// ── TOKEN ────────────────────────────────────────────────────
+// ── TOKEN ─────────────────────────────────────────────────────
 async function getOdToken() {
+  // Return cached token if still valid
   if (_odToken && Date.now() < _odTokenExpiry - 60000) return _odToken;
-  const ok = await initMsal();
-  if (!ok || !msalInstance) throw new Error('MSAL non inizializzato');
-  const accounts = msalInstance.getAllAccounts();
-  try {
-    const req = { scopes: OD_CONFIG.scopes, account: accounts[0] };
-    const resp = accounts.length
-      ? await msalInstance.acquireTokenSilent(req)
-      : await msalInstance.loginPopup({ scopes: OD_CONFIG.scopes });
-    _odToken = resp.accessToken;
-    _odTokenExpiry = resp.expiresOn ? resp.expiresOn.getTime() : Date.now() + 3600000;
-    return _odToken;
-  } catch(e) {
+
+  // Try refresh token from sessionStorage
+  const refresh = sessionStorage.getItem('od_refresh');
+  if (refresh) {
     try {
-      const resp = await msalInstance.acquireTokenPopup({ scopes: OD_CONFIG.scopes });
-      _odToken = resp.accessToken;
-      _odTokenExpiry = resp.expiresOn ? resp.expiresOn.getTime() : Date.now() + 3600000;
-      return _odToken;
-    } catch(e2) {
-      throw new Error('Autenticazione fallita: ' + e2.message);
-    }
+      const res = await fetch(OD_CONFIG.authEndpoint + '/token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          client_id: OD_CONFIG.clientId,
+          grant_type: 'refresh_token',
+          refresh_token: refresh,
+          scope: OD_CONFIG.scopes,
+          redirect_uri: OD_CONFIG.redirectUri,
+        })
+      });
+      const data = await res.json();
+      if (data.access_token) {
+        _odToken = data.access_token;
+        _odTokenExpiry = Date.now() + (data.expires_in * 1000);
+        if (data.refresh_token) sessionStorage.setItem('od_refresh', data.refresh_token);
+        return _odToken;
+      }
+    } catch(e) { console.warn('Refresh token failed:', e); }
+  }
+
+  throw new Error('Non autenticato — clicca Connetti OneDrive');
+}
+
+// ── AUTH FLOW (PKCE) ──────────────────────────────────────────
+async function connectOneDrive() {
+  setOdStatus(false, 'Connessione…');
+  try {
+    const { verifier, challenge } = await pkceChallenge();
+    sessionStorage.setItem('od_pkce_verifier', verifier);
+
+    const params = new URLSearchParams({
+      client_id:             OD_CONFIG.clientId,
+      response_type:         'code',
+      redirect_uri:          OD_CONFIG.redirectUri,
+      scope:                 OD_CONFIG.scopes,
+      code_challenge:        challenge,
+      code_challenge_method: 'S256',
+      response_mode:         'query',
+      prompt:                'select_account',
+    });
+
+    // Open auth popup
+    const authUrl = OD_CONFIG.authEndpoint + '/authorize?' + params.toString();
+    const popup = window.open(authUrl, 'msauth', 'width=520,height=640,left=200,top=100');
+    if (!popup) { throw new Error('Popup bloccato — abilita i popup per questo sito'); }
+
+    // Listen for redirect
+    await new Promise((resolve, reject) => {
+      const timer = setInterval(async () => {
+        try {
+          if (!popup || popup.closed) {
+            clearInterval(timer);
+            reject(new Error('Finestra chiusa prima del completamento'));
+            return;
+          }
+          let url;
+          try { url = popup.location.href; } catch(e) { return; } // cross-origin, wait
+
+          if (url && url.startsWith(OD_CONFIG.redirectUri)) {
+            clearInterval(timer);
+            popup.close();
+
+            const urlParams = new URLSearchParams(new URL(url).search);
+            const code = urlParams.get('code');
+            const error = urlParams.get('error');
+
+            if (error) { reject(new Error(urlParams.get('error_description') || error)); return; }
+            if (!code)  { reject(new Error('Codice di autorizzazione non ricevuto')); return; }
+
+            // Exchange code for token
+            const verifier = sessionStorage.getItem('od_pkce_verifier');
+            const res = await fetch(OD_CONFIG.authEndpoint + '/token', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+              body: new URLSearchParams({
+                client_id:     OD_CONFIG.clientId,
+                grant_type:    'authorization_code',
+                code,
+                redirect_uri:  OD_CONFIG.redirectUri,
+                code_verifier: verifier,
+                scope:         OD_CONFIG.scopes,
+              })
+            });
+            const data = await res.json();
+            if (data.error) { reject(new Error(data.error_description || data.error)); return; }
+
+            _odToken = data.access_token;
+            _odTokenExpiry = Date.now() + (data.expires_in * 1000);
+            if (data.refresh_token) sessionStorage.setItem('od_refresh', data.refresh_token);
+            sessionStorage.removeItem('od_pkce_verifier');
+            resolve();
+          }
+        } catch(e) {
+          if (e.message && e.message !== 'cross-origin') { clearInterval(timer); reject(e); }
+        }
+      }, 300);
+    });
+
+    // Get user info
+    const userRes = await fetch('https://graph.microsoft.com/v1.0/me', {
+      headers: { 'Authorization': 'Bearer ' + _odToken }
+    });
+    const user = await userRes.json();
+    sessionStorage.setItem('od_user', user.displayName || user.mail || 'Utente');
+    odConnected = true;
+    setOdStatus(true, user.displayName || 'Connesso');
+    showToast('✓ Connesso come ' + (user.displayName || user.mail));
+    await loadFromOneDrive();
+    renderCurrentView();
+
+  } catch(e) {
+    odConnected = false;
+    setOdStatus(false, 'Non connesso');
+    showToast('Errore: ' + e.message, true);
+    console.error('connectOneDrive error:', e);
   }
 }
 
-// ── GRAPH API HELPERS ────────────────────────────────────────
+async function disconnectOneDrive() {
+  odConnected = false;
+  _odToken = null;
+  _odTokenExpiry = 0;
+  sessionStorage.removeItem('od_refresh');
+  sessionStorage.removeItem('od_user');
+  sessionStorage.removeItem('od_pkce_verifier');
+  setOdStatus(false, 'Non connesso');
+  showToast('✓ Disconnesso da OneDrive');
+  renderCurrentView();
+}
+
+// ── GRAPH API ─────────────────────────────────────────────────
 async function odRead(path) {
   const token = await getOdToken();
   const url = `https://graph.microsoft.com/v1.0/me/drive/root:/${path}:/content`;
   const res = await fetch(url, { headers: { 'Authorization': 'Bearer ' + token } });
   if (res.status === 404) return null;
-  if (!res.ok) throw new Error('Lettura fallita: ' + res.status);
+  if (!res.ok) throw new Error('Lettura OneDrive fallita: ' + res.status);
   return res.json();
 }
 
@@ -1240,55 +1310,8 @@ async function odWrite(path, data) {
     headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
     body: JSON.stringify(data)
   });
-  if (!res.ok) throw new Error('Scrittura fallita: ' + res.status);
+  if (!res.ok) throw new Error('Scrittura OneDrive fallita: ' + res.status);
   return res.json();
-}
-
-// ── CONNECT / SYNC ───────────────────────────────────────────
-async function connectOneDrive() {
-  setOdStatus(false, 'Connessione…');
-  try {
-    const ok = await initMsal();
-    if (!ok || !msalInstance) throw new Error('Inizializzazione MSAL fallita');
-
-    // Login popup if no account
-    const accounts = msalInstance.getAllAccounts();
-    if (!accounts.length) {
-      await msalInstance.loginPopup({ scopes: OD_CONFIG.scopes });
-    }
-
-    const token = await getOdToken();
-
-    // Get user info
-    const userRes = await fetch('https://graph.microsoft.com/v1.0/me', {
-      headers: { 'Authorization': 'Bearer ' + token }
-    });
-    const user = await userRes.json();
-    odConnected = true;
-    setOdStatus(true, user.displayName || 'Connesso');
-    showToast('✓ Connesso come ' + (user.displayName || user.mail));
-
-    // Load data from OneDrive
-    await loadFromOneDrive();
-    renderCurrentView();
-  } catch(e) {
-    odConnected = false;
-    setOdStatus(false, 'Non connesso');
-    showToast('Errore: ' + e.message, true);
-    console.error('connectOneDrive error:', e);
-  }
-}
-
-async function disconnectOneDrive() {
-  if (msalInstance) {
-    const accounts = msalInstance.getAllAccounts();
-    if (accounts.length) await msalInstance.logoutPopup({ account: accounts[0] });
-  }
-  odConnected = false;
-  _odToken = null;
-  setOdStatus(false, 'Non connesso');
-  showToast('✓ Disconnesso da OneDrive');
-  renderCurrentView();
 }
 
 async function syncToOneDrive(data) {
@@ -1296,9 +1319,7 @@ async function syncToOneDrive(data) {
   try {
     await odWrite(OD_CONFIG.repairsPath, data);
     setOdStatus(true, 'Sincronizzato ✓');
-    setTimeout(() => {
-      if (odConnected) setOdStatus(true, 'Connesso');
-    }, 3000);
+    setTimeout(() => { if (odConnected) setOdStatus(true, 'Connesso'); }, 3000);
   } catch(e) {
     showToast('Sync fallito: ' + e.message, true);
     console.error('Sync error:', e);
@@ -1313,12 +1334,12 @@ async function loadFromOneDrive() {
       localStorage.setItem(STORE_KEY, JSON.stringify(data));
       showToast('✓ ' + data.length + ' attività caricate da OneDrive');
     } else if (data === null) {
-      // File not found — create it
       await odWrite(OD_CONFIG.repairsPath, []);
       showToast('✓ File repairs.json creato su OneDrive');
     }
   } catch(e) {
     showToast('Caricamento fallito: ' + e.message, true);
+    console.error('loadFromOneDrive error:', e);
   }
 }
 
@@ -1328,6 +1349,24 @@ function setOdStatus(ok, label) {
   if (dot) dot.style.background = ok ? 'var(--green)' : 'var(--red)';
   if (lbl) lbl.textContent = label || (ok ? 'Connesso' : 'Non connesso');
 }
+
+// Auto-reconnect if refresh token available
+(async () => {
+  const refresh = sessionStorage.getItem('od_refresh');
+  const user = sessionStorage.getItem('od_user');
+  if (refresh) {
+    try {
+      await getOdToken(); // will use refresh token
+      odConnected = true;
+      setOdStatus(true, user || 'Connesso');
+    } catch(e) {
+      sessionStorage.removeItem('od_refresh');
+      setOdStatus(false, 'Non connesso');
+    }
+  } else {
+    setOdStatus(false, 'Non connesso');
+  }
+})();
 
 // ============================================================
 // ROUTING
@@ -4372,17 +4411,7 @@ function bootApp() {
   if (loadWarehouse().length === 0 && isAdmin()) {
     setTimeout(() => showToast('⚠ Magazzino non caricato. Vai su Importa Liste per caricare il file Excel.', true), 1000);
   }
-  // Auto-connect OneDrive on startup
-  initMsal().then(ok => {
-    if (!ok) return;
-    const accounts = msalInstance ? msalInstance.getAllAccounts() : [];
-    if (accounts.length > 0) {
-      // Already authenticated — reconnect silently
-      connectOneDrive();
-    } else {
-      setOdStatus(false, 'Non connesso');
-    }
-  });
+  // initMsal removed — using native OAuth2 PKCE
 }
 
 // Check existing session or show login
