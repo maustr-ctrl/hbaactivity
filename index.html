@@ -1154,11 +1154,14 @@ function initMsal() {
 
     s.onload = async () => {
       try {
+        console.log('MSAL script caricato. window.msal:', typeof window.msal, 'window.msalBrowser:', typeof window.msalBrowser);
         // MSAL v2 exposes itself as window.msal
         const msalLib = window.msal;
         if (!msalLib || !msalLib.PublicClientApplication) {
+          console.log('Chiavi window con msal:', Object.keys(window).filter(k=>k.toLowerCase().includes('msal')));
           throw new Error('MSAL non trovato. Namespace disponibili: ' + Object.keys(window).filter(k=>k.toLowerCase().includes('msal')).join(', ') || 'nessuno');
         }
+        console.log('MSAL trovato, creo istanza...');
         const config = {
           auth: {
             clientId: OD_CONFIG.clientId,
