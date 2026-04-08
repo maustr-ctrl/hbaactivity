@@ -1148,27 +1148,47 @@ const OD_CONFIG = {
 function initMsal() {
   return new Promise((resolve) => {
     if (msalInstance) { resolve(true); return; }
+
     const s = document.createElement('script');
     s.src = 'https://unpkg.com/@azure/msal-browser@3.5.0/dist/index.umd.min.js';
+
     s.onload = async () => {
       try {
-        const msalLib = window.msalBrowser || window.msal;
-        if (!msalLib) throw new Error('MSAL non trovato nel namespace globale');
-        msalInstance = new msalLib.PublicClientApplication({
-          auth: { clientId: OD_CONFIG.clientId, authority: OD_CONFIG.authority, redirectUri: OD_CONFIG.redirectUri },
-          cache: { cacheLocation: 'sessionStorage', storeAuthStateInCookie: false }
-        });
+        // MSAL v3 exposes itself as window.msalBrowser
+        const msalLib = window.msalBrowser;
+        if (!msalLib || !msalLib.PublicClientApplication) {
+          throw new Error('MSAL v3 non trovato — namespace: ' + Object.keys(window).filter(k=>k.includes('msal')).join(', '));
+        }
+        const config = {
+          auth: {
+            clientId: OD_CONFIG.clientId,
+            authority: OD_CONFIG.authority,
+            redirectUri: OD_CONFIG.redirectUri
+          },
+          cache: {
+            cacheLocation: 'sessionStorage',
+            storeAuthStateInCookie: false
+          }
+        };
+        msalInstance = new msalLib.PublicClientApplication(config);
         await msalInstance.initialize();
-        // Handle redirect response if any
         await msalInstance.handleRedirectPromise();
         resolve(true);
       } catch(e) {
         console.error('MSAL init error:', e);
-        setOdStatus(false, 'Errore MSAL');
+        setOdStatus(false, 'Errore MSAL: ' + e.message);
+        showToast('Errore MSAL: ' + e.message, true);
         resolve(false);
       }
     };
-    s.onerror = () => { setOdStatus(false, 'Libreria MSAL non caricata'); resolve(false); };
+
+    s.onerror = (e) => {
+      console.error('MSAL load error:', e);
+      setOdStatus(false, 'Libreria MSAL non caricata');
+      showToast('Libreria MSAL non caricata', true);
+      resolve(false);
+    };
+
     document.head.appendChild(s);
   });
 }
@@ -1176,7 +1196,8 @@ function initMsal() {
 // ── TOKEN ────────────────────────────────────────────────────
 async function getOdToken() {
   if (_odToken && Date.now() < _odTokenExpiry - 60000) return _odToken;
-  if (!msalInstance) await initMsal();
+  const ok = await initMsal();
+  if (!ok || !msalInstance) throw new Error('MSAL non inizializzato');
   const accounts = msalInstance.getAllAccounts();
   try {
     const req = { scopes: OD_CONFIG.scopes, account: accounts[0] };
@@ -1187,7 +1208,6 @@ async function getOdToken() {
     _odTokenExpiry = resp.expiresOn ? resp.expiresOn.getTime() : Date.now() + 3600000;
     return _odToken;
   } catch(e) {
-    // Silent failed — try popup
     try {
       const resp = await msalInstance.acquireTokenPopup({ scopes: OD_CONFIG.scopes });
       _odToken = resp.accessToken;
