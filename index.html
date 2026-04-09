@@ -1135,11 +1135,40 @@ let _odToken = null;
 let _odTokenExpiry = 0;
 
 const OD_CONFIG = {
-  clientId:    '09b87861-dbe9-4cb6-8913-15932aa27ba8',
-  redirectUri: 'https://maustr-ctrl.github.io/hbaactivity/',
-  scopes:      'Files.ReadWrite User.Read offline_access',
-  repairsPath: 'HbaActivity/repairs.json',
+  clientId:     '09b87861-dbe9-4cb6-8913-15932aa27ba8',
+  redirectUri:  'https://maustr-ctrl.github.io/hbaactivity/',
+  scopes:       'Files.ReadWrite Sites.ReadWrite.All User.Read offline_access',
   authEndpoint: 'https://login.microsoftonline.com/common/oauth2/v2.0',
+  // SharePoint config
+  siteHostname: 'hbasrl.sharepoint.com',
+  sitePath:     '/sites/HALFBRIDGEAUTOMATION',
+  folderPath:   'HbaActivity',
+  repairsFile:  'repairs.json',
+  logFile:      'log.json',
+};
+
+// Graph API base for SharePoint site drive
+// Usage: spDriveUrl() + '/root:/HbaActivity/repairs.json:/content'
+let _spDriveId = null;
+async function spDriveUrl() {
+  if (_spDriveId) return `https://graph.microsoft.com/v1.0/drives/${_spDriveId}`;
+  const token = await getOdToken();
+  // Get site ID
+  const siteRes = await fetch(
+    `https://graph.microsoft.com/v1.0/sites/${OD_CONFIG.siteHostname}:${OD_CONFIG.sitePath}`,
+    { headers: { 'Authorization': 'Bearer ' + token } }
+  );
+  if (!siteRes.ok) throw new Error('Sito SharePoint non trovato: ' + siteRes.status);
+  const site = await siteRes.json();
+  // Get default drive
+  const driveRes = await fetch(
+    `https://graph.microsoft.com/v1.0/sites/${site.id}/drive`,
+    { headers: { 'Authorization': 'Bearer ' + token } }
+  );
+  if (!driveRes.ok) throw new Error('Drive SharePoint non trovato: ' + driveRes.status);
+  const drive = await driveRes.json();
+  _spDriveId = drive.id;
+  return `https://graph.microsoft.com/v1.0/drives/${_spDriveId}`;
 };
 
 // ── PKCE HELPERS ─────────────────────────────────────────────
@@ -1295,29 +1324,31 @@ async function disconnectOneDrive() {
 // ── GRAPH API ─────────────────────────────────────────────────
 async function odRead(path) {
   const token = await getOdToken();
-  const url = `https://graph.microsoft.com/v1.0/me/drive/root:/${path}:/content`;
+  const base = await spDriveUrl();
+  const url = `${base}/root:/${path}:/content`;
   const res = await fetch(url, { headers: { 'Authorization': 'Bearer ' + token } });
   if (res.status === 404) return null;
-  if (!res.ok) throw new Error('Lettura OneDrive fallita: ' + res.status);
+  if (!res.ok) throw new Error('Lettura SharePoint fallita: ' + res.status);
   return res.json();
 }
 
 async function odWrite(path, data) {
   const token = await getOdToken();
-  const url = `https://graph.microsoft.com/v1.0/me/drive/root:/${path}:/content`;
+  const base = await spDriveUrl();
+  const url = `${base}/root:/${path}:/content`;
   const res = await fetch(url, {
     method: 'PUT',
     headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
     body: JSON.stringify(data)
   });
-  if (!res.ok) throw new Error('Scrittura OneDrive fallita: ' + res.status);
+  if (!res.ok) throw new Error('Scrittura SharePoint fallita: ' + res.status);
   return res.json();
 }
 
 async function syncToOneDrive(data) {
   if (!odConnected) return;
   try {
-    await odWrite(OD_CONFIG.repairsPath, data);
+    await odWrite(OD_CONFIG.folderPath + '/' + OD_CONFIG.repairsFile, data);
     setOdStatus(true, 'Sincronizzato ✓');
     setTimeout(() => { if (odConnected) setOdStatus(true, 'Connesso'); }, 3000);
   } catch(e) {
@@ -1329,12 +1360,12 @@ async function syncToOneDrive(data) {
 async function loadFromOneDrive() {
   if (!odConnected) return;
   try {
-    const data = await odRead(OD_CONFIG.repairsPath);
+    const data = await odRead(OD_CONFIG.folderPath + '/' + OD_CONFIG.repairsFile);
     if (data && Array.isArray(data)) {
       localStorage.setItem(STORE_KEY, JSON.stringify(data));
       showToast('✓ ' + data.length + ' attività caricate da OneDrive');
     } else if (data === null) {
-      await odWrite(OD_CONFIG.repairsPath, []);
+      await odWrite(OD_CONFIG.folderPath + '/' + OD_CONFIG.repairsFile, []);
       showToast('✓ File repairs.json creato su OneDrive');
     }
   } catch(e) {
@@ -4304,8 +4335,8 @@ function renderCloud() {
         <div class="od-icon">☁</div>
         <div class="od-info">
           <h4>Microsoft OneDrive</h4>
-          <p>Client ID: <span style="font-family:var(--font-mono);font-size:0.78rem;color:var(--accent);">${OD_CONFIG.clientId}</span></p>
-          <p style="font-size:0.78rem;color:var(--muted);">File: <span style="font-family:var(--font-mono);">${OD_CONFIG.repairsPath}</span></p>
+          <p style="font-size:0.78rem;color:var(--muted);">Sito: <span style="font-family:var(--font-mono);color:var(--accent);">hbasrl.sharepoint.com</span></p>
+          <p style="font-size:0.78rem;color:var(--muted);">Percorso: <span style="font-family:var(--font-mono);">HbaActivity/repairs.json</span></p>
         </div>
         <div class="od-status" id="odStatusBadge">
           <div style="width:8px;height:8px;border-radius:50%;background:${isConn ? 'var(--green)' : 'var(--red)'}"></div>
