@@ -1141,57 +1141,7 @@ const OD_CONFIG = {
   authEndpoint: 'https://login.microsoftonline.com/common/oauth2/v2.0',
   repairsPath:  'HbaActivity/repairs.json',
   logPath:      'HbaActivity/log.json',
-  // SharePoint site name as it appears in OneDrive shared libraries
-  spSiteName:   'HALFBRIDGEAUTOMATION',
 };
-
-// Returns the drive ID of the SharePoint library visible in user's OneDrive
-let _spDriveId = null;
-async function getSpDriveId() {
-  if (_spDriveId) return _spDriveId;
-  const token = await getOdToken();
-  // List shared libraries (SharePoint sites) available to the user
-  const res = await fetch(
-    'https://graph.microsoft.com/v1.0/me/followedSites?$select=id,name,displayName',
-    { headers: { 'Authorization': 'Bearer ' + token } }
-  );
-  if (res.ok) {
-    const data = await res.json();
-    const site = (data.value || []).find(s =>
-      (s.displayName || '').toUpperCase().includes(OD_CONFIG.spSiteName) ||
-      (s.name || '').toUpperCase().includes(OD_CONFIG.spSiteName)
-    );
-    if (site) {
-      const driveRes = await fetch(
-        `https://graph.microsoft.com/v1.0/sites/${site.id}/drive?$select=id`,
-        { headers: { 'Authorization': 'Bearer ' + token } }
-      );
-      if (driveRes.ok) {
-        const drive = await driveRes.json();
-        _spDriveId = drive.id;
-        return _spDriveId;
-      }
-    }
-  }
-  // Fallback: try direct site lookup via hostname
-  const siteRes = await fetch(
-    'https://graph.microsoft.com/v1.0/sites/hbasrl.sharepoint.com:/sites/HALFBRIDGEAUTOMATION?$select=id',
-    { headers: { 'Authorization': 'Bearer ' + token } }
-  );
-  if (siteRes.ok) {
-    const site = await siteRes.json();
-    const driveRes = await fetch(
-      `https://graph.microsoft.com/v1.0/sites/${site.id}/drive?$select=id`,
-      { headers: { 'Authorization': 'Bearer ' + token } }
-    );
-    if (driveRes.ok) {
-      const drive = await driveRes.json();
-      _spDriveId = drive.id;
-      return _spDriveId;
-    }
-  }
-  return null; // fallback to personal OneDrive
-}
 
 // ── PKCE HELPERS ─────────────────────────────────────────────
 async function pkceChallenge() {
@@ -1346,28 +1296,22 @@ async function disconnectOneDrive() {
 // ── GRAPH API ─────────────────────────────────────────────────
 async function odRead(path) {
   const token = await getOdToken();
-  const driveId = await getSpDriveId();
-  const url = driveId
-    ? `https://graph.microsoft.com/v1.0/drives/${driveId}/root:/${path}:/content`
-    : `https://graph.microsoft.com/v1.0/me/drive/root:/${path}:/content`;
+  const url = `https://graph.microsoft.com/v1.0/me/drive/root:/${path}:/content`;
   const res = await fetch(url, { headers: { 'Authorization': 'Bearer ' + token } });
   if (res.status === 404) return null;
-  if (!res.ok) throw new Error('Lettura fallita (' + res.status + '): ' + (driveId ? 'SharePoint' : 'OneDrive'));
+  if (!res.ok) throw new Error('Lettura OneDrive fallita: ' + res.status);
   return res.json();
 }
 
 async function odWrite(path, data) {
   const token = await getOdToken();
-  const driveId = await getSpDriveId();
-  const url = driveId
-    ? `https://graph.microsoft.com/v1.0/drives/${driveId}/root:/${path}:/content`
-    : `https://graph.microsoft.com/v1.0/me/drive/root:/${path}:/content`;
+  const url = `https://graph.microsoft.com/v1.0/me/drive/root:/${path}:/content`;
   const res = await fetch(url, {
     method: 'PUT',
     headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
     body: JSON.stringify(data)
   });
-  if (!res.ok) throw new Error('Scrittura fallita (' + res.status + '): ' + (driveId ? 'SharePoint' : 'OneDrive'));
+  if (!res.ok) throw new Error('Scrittura OneDrive fallita: ' + res.status);
   return res.json();
 }
 
@@ -4361,7 +4305,7 @@ function renderCloud() {
         <div class="od-icon">☁</div>
         <div class="od-info">
           <h4>Microsoft OneDrive</h4>
-          <p style="font-size:0.78rem;color:var(--muted);">SharePoint: <span style="font-family:var(--font-mono);color:var(--accent);">HALFBRIDGEAUTOMATION</span></p>
+          <p style="font-size:0.78rem;color:var(--muted);">OneDrive personale condiviso</p>
           <p style="font-size:0.78rem;color:var(--muted);">Percorso: <span style="font-family:var(--font-mono);">HbaActivity/repairs.json</span></p>
         </div>
         <div class="od-status" id="odStatusBadge">
