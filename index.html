@@ -1141,6 +1141,8 @@ const OD_CONFIG = {
   authEndpoint: 'https://login.microsoftonline.com/common/oauth2/v2.0',
   repairsPath:  'HbaActivity/repairs.json',
   logPath:      'HbaActivity/log.json',
+  // Fixed Drive ID — tutti gli utenti leggono/scrivono sempre su questo OneDrive
+  sharedDriveId: 'b!JX8clHEz-0uyHPiE4VeOGDk0hphyVfZHlK43CIVdb37QTrwEa-4FTZQjuY0n45F9',
 };
 
 // ── PKCE HELPERS ─────────────────────────────────────────────
@@ -1296,7 +1298,7 @@ async function disconnectOneDrive() {
 // ── GRAPH API ─────────────────────────────────────────────────
 async function odRead(path) {
   const token = await getOdToken();
-  const url = `https://graph.microsoft.com/v1.0/me/drive/root:/${path}:/content`;
+  const url = `https://graph.microsoft.com/v1.0/drives/${OD_CONFIG.sharedDriveId}/root:/${path}:/content`;
   const res = await fetch(url, { headers: { 'Authorization': 'Bearer ' + token } });
   if (res.status === 404) return null;
   if (!res.ok) throw new Error('Lettura OneDrive fallita: ' + res.status);
@@ -1305,7 +1307,7 @@ async function odRead(path) {
 
 async function odWrite(path, data) {
   const token = await getOdToken();
-  const url = `https://graph.microsoft.com/v1.0/me/drive/root:/${path}:/content`;
+  const url = `https://graph.microsoft.com/v1.0/drives/${OD_CONFIG.sharedDriveId}/root:/${path}:/content`;
   const res = await fetch(url, {
     method: 'PUT',
     headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
