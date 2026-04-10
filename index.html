@@ -604,7 +604,7 @@
   <div class="header-actions">
     <div class="auth-badge">
       <div class="auth-dot" id="syncDot"></div>
-      <span id="syncLabel">Connesso a OneDrive</span>
+      <span id="syncLabel">Non connesso</span>
     </div>
     <div id="roleBadgeHeader"></div>
     <button class="btn btn-outline btn-sm" onclick="showView('cloud')" id="btnConfigurazione">⚙ Configurazione</button>
@@ -1273,7 +1273,7 @@ async function connectOneDrive() {
     const user = await userRes.json();
     sessionStorage.setItem('od_user', user.displayName || user.mail || 'Utente');
     odConnected = true;
-    setOdStatus(true, user.displayName || 'Connesso');
+    setOdStatus(true, 'Connesso');
     showToast('✓ Connesso come ' + (user.displayName || user.mail));
     await loadFromOneDrive();
     renderCurrentView();
@@ -1325,8 +1325,8 @@ async function syncToOneDrive(data) {
   try {
     await odWrite(OD_CONFIG.repairsPath, data);
     setPendingSync(false);
-    setOdStatus(true, 'Sincronizzato ✓');
-    setTimeout(() => { if (odConnected) setOdStatus(true, 'Connesso'); }, 3000);
+    setOdStatus(true, 'Connesso');
+    
   } catch(e) {
     showToast('Sync fallito: ' + e.message, true);
     console.error('Sync error:', e);
@@ -1518,7 +1518,7 @@ function setOdStatus(ok, label) {
     try {
       await getOdToken(); // will use refresh token
       odConnected = true;
-      setOdStatus(true, user || 'Connesso');
+      setOdStatus(true, 'Connesso');
     } catch(e) {
       sessionStorage.removeItem('od_refresh');
       setOdStatus(false, 'Non connesso');
