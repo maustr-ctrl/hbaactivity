@@ -1105,6 +1105,8 @@ function loadRepairs() {
 function saveRepairs(arr) {
   try {
     localStorage.setItem(STORE_KEY, JSON.stringify(arr));
+    // Mark pending sync if offline
+    if (!_isOnline) setPendingSync(true);
   } catch(e) {
     // Quota exceeded — try saving without photos/videos
     const arrNoMedia = arr.map(r => ({...r, photos: (r.photos||[]).filter(p => p.length < 100*1024)}));
@@ -1321,6 +1323,7 @@ async function syncToOneDrive(data) {
   if (!odConnected) return;
   try {
     await odWrite(OD_CONFIG.repairsPath, data);
+    setPendingSync(false);
     setOdStatus(true, 'Sincronizzato ✓');
     setTimeout(() => { if (odConnected) setOdStatus(true, 'Connesso'); }, 3000);
   } catch(e) {
@@ -1346,6 +1349,138 @@ async function loadFromOneDrive() {
   }
 }
 
+
+
+// ── OFFLINE / SYNC MANAGEMENT ────────────────────────────────
+let _isOnline = navigator.onLine;
+const PENDING_SYNC_KEY = 'hbaactivity_pending_sync';
+
+function hasPendingSync() {
+  return localStorage.getItem(PENDING_SYNC_KEY) === 'true';
+}
+function setPendingSync(val) {
+  if (val) localStorage.setItem(PENDING_SYNC_KEY, 'true');
+  else localStorage.removeItem(PENDING_SYNC_KEY);
+}
+
+function updateOfflineBanner() {
+  let banner = document.getElementById('offlineBanner');
+  if (!_isOnline) {
+    if (!banner) {
+      banner = document.createElement('div');
+      banner.id = 'offlineBanner';
+      banner.style.cssText = 'position:fixed;bottom:0;left:0;right:0;background:#1a1a2e;border-top:2px solid var(--yellow);color:var(--yellow);padding:10px 20px;font-size:0.82rem;z-index:9998;display:flex;align-items:center;justify-content:space-between;';
+      banner.innerHTML = '<span>⚠ Modalità offline — le modifiche vengono salvate localmente</span>';
+      document.body.appendChild(banner);
+    }
+  } else {
+    if (banner) banner.remove();
+  }
+}
+
+async function handleOnline() {
+  _isOnline = true;
+  updateOfflineBanner();
+  if (!odConnected) return;
+  if (!hasPendingSync()) return;
+
+  // Show sync dialog
+  const div = document.createElement('div');
+  div.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:99999;display:flex;align-items:center;justify-content:center;';
+  div.innerHTML = `
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:28px;max-width:420px;width:90%;">
+      <h3 style="font-family:var(--font-head);font-size:1.1rem;font-weight:700;margin-bottom:10px;">🔄 Connessione ripristinata</h3>
+      <p style="color:var(--muted);font-size:0.85rem;margin-bottom:20px;line-height:1.6;">
+        Hai modifiche locali non sincronizzate.<br>
+        Cosa vuoi fare?
+      </p>
+      <div style="display:flex;gap:10px;flex-direction:column;">
+        <button class="btn btn-primary" id="syncUpBtn">⬆ Carica modifiche locali su OneDrive</button>
+        <button class="btn btn-outline" id="syncDownBtn">⬇ Scarica dati da OneDrive (sovrascrive locale)</button>
+        <button class="btn btn-ghost" id="syncSkipBtn">Decido dopo</button>
+      </div>
+    </div>`;
+  document.body.appendChild(div);
+
+  document.getElementById('syncUpBtn').onclick = async () => {
+    div.remove();
+    try {
+      const local = loadRepairs();
+      await odWrite(OD_CONFIG.repairsPath, local);
+      setPendingSync(false);
+      showToast('✓ Modifiche locali caricate su OneDrive');
+    } catch(e) { showToast('Errore upload: ' + e.message, true); }
+  };
+  document.getElementById('syncDownBtn').onclick = async () => {
+    div.remove();
+    try {
+      await loadFromOneDrive();
+      setPendingSync(false);
+      renderCurrentView();
+      showToast('✓ Dati aggiornati da OneDrive');
+    } catch(e) { showToast('Errore download: ' + e.message, true); }
+  };
+  document.getElementById('syncSkipBtn').onclick = () => div.remove();
+}
+
+function handleOffline() {
+  _isOnline = false;
+  updateOfflineBanner();
+  showToast('⚠ Connessione persa — modalità offline attiva', true);
+}
+
+window.addEventListener('online',  handleOnline);
+window.addEventListener('offline', handleOffline);
+updateOfflineBanner();
+// ── LOCK FILE ────────────────────────────────────────────────
+let _currentLockId = null;
+const LOCK_TIMEOUT_MS = 15 * 60 * 1000; // 15 minuti
+
+async function acquireLock(repairId) {
+  if (!odConnected) return true; // offline — no lock needed
+  const lockPath = `HbaActivity/lock_${repairId}.json`;
+  const operator = getOperatorName();
+  try {
+    // Check if lock already exists
+    const existing = await odRead(lockPath);
+    if (existing) {
+      const age = Date.now() - new Date(existing.ts).getTime();
+      if (age < LOCK_TIMEOUT_MS && existing.operator !== operator) {
+        showToast(`⚠ Attività in modifica da ${existing.operator} (${Math.round(age/60000)} min fa)`, true);
+        return false; // locked by someone else
+      }
+    }
+    // Write lock
+    await odWrite(lockPath, {
+      operator,
+      ts: new Date().toISOString(),
+      repairId
+    });
+    _currentLockId = repairId;
+    return true;
+  } catch(e) {
+    console.warn('Lock acquire failed:', e);
+    return true; // fail open — allow edit if lock fails
+  }
+}
+
+async function releaseLock(repairId) {
+  if (!odConnected || !repairId) return;
+  const lockPath = `HbaActivity/lock_${repairId}.json`;
+  try {
+    const token = await getOdToken();
+    const url = `https://graph.microsoft.com/v1.0/drives/${OD_CONFIG.sharedDriveId}/root:/${lockPath}`;
+    await fetch(url, { method: 'DELETE', headers: { 'Authorization': 'Bearer ' + token } });
+    _currentLockId = null;
+  } catch(e) {
+    console.warn('Lock release failed:', e);
+  }
+}
+
+// Release lock on page close
+window.addEventListener('beforeunload', () => {
+  if (_currentLockId) releaseLock(_currentLockId);
+});
 function setOdStatus(ok, label) {
   const dot = document.getElementById('syncDot');
   const lbl = document.getElementById('syncLabel');
@@ -1737,10 +1872,12 @@ function openNewRepair() {
   showFormModal(null);
 }
 let _preEditRepair = null;
-function openEditRepair(id) {
+async function openEditRepair(id) {
   const r = loadRepairs().find(x=>x.id==id);
   if (!r) return;
-  _preEditRepair = { ...r }; // snapshot before edit
+  const locked = await acquireLock(id);
+  if (!locked) return; // blocked by another user
+  _preEditRepair = { ...r };
   editingPhotos = r.photos ? [...r.photos] : [];
   showFormModal(r);
 }
@@ -3008,6 +3145,7 @@ function saveRepair(editId) {
     addLogEntry('insert', saved, null);
   }
   saveRepairs(repairs);
+  if (editId !== null && editId !== 'null') releaseLock(editId);
   closeModal();
   showToast(editId !== null ? '✓ Riparazione aggiornata' : '✓ Riparazione creata');
   renderCurrentView();
@@ -3035,6 +3173,7 @@ function openDetail(id) {
 }
 
 function closeModal() {
+  if (_currentLockId) { releaseLock(_currentLockId); _currentLockId = null; }
   const overlay = document.getElementById('modalOverlay');
   overlay.classList.remove('open');
   overlay.innerHTML = '';
@@ -4413,6 +4552,9 @@ function bootApp() {
   // Warn if warehouse not loaded (large files can't be stored in localStorage)
   if (loadWarehouse().length === 0 && isAdmin()) {
     setTimeout(() => showToast('⚠ Magazzino non caricato. Vai su Importa Liste per caricare il file Excel.', true), 1000);
+  }
+  if (hasPendingSync()) {
+    setTimeout(() => showToast('⚠ Ci sono modifiche locali non sincronizzate — connettiti a OneDrive', true), 1500);
   }
   // initMsal removed — using native OAuth2 PKCE
 }
