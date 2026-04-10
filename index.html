@@ -1382,7 +1382,7 @@ function updateOfflineBanner() {
 async function handleOnline() {
   _isOnline = true;
   updateOfflineBanner();
-  if (odConnected) setOdStatus(true, 'Connesso');
+  if (odConnected) { setOdStatus(true, 'Connesso'); if (currentView === 'cloud') renderCloud(); }
   if (!odConnected) return;
   if (!hasPendingSync()) return;
 
@@ -1448,6 +1448,7 @@ function handleOffline() {
   _isOnline = false;
   updateOfflineBanner();
   setOdStatus(false, 'Offline');
+  if (currentView === 'cloud') renderCloud();
   showToast('⚠ Connessione persa — modalità offline attiva', true);
 }
 
@@ -4460,7 +4461,7 @@ function renderActivityLog() {
 }
 
 function renderCloud() {
-  const isConn = odConnected;
+  const isConn = odConnected && _isOnline;
   document.getElementById('mainContent').innerHTML = `
     <div style="margin-bottom:28px;">
       <h2 style="font-family:var(--font-head);font-size:1.5rem;font-weight:800;">Configurazione Cloud</h2>
