@@ -688,7 +688,8 @@ function saveLog(arr) {
   localStorage.setItem(LOG_KEY, JSON.stringify(arr));
 }
 function getOperatorName() {
-  return localStorage.getItem(OPERATOR_KEY) || (isAdmin() ? 'Amministratore' : 'Operatore');
+  if (isAdmin()) return 'Amministratore';
+  return localStorage.getItem(OPERATOR_KEY) || 'Operatore';
 }
 function setOperatorName(name) {
   localStorage.setItem(OPERATOR_KEY, name);
@@ -3598,7 +3599,6 @@ function renderMasterImport() {
     clienti:   loadClients().length,
     tecnici:   loadTechnicians().length,
     errori:    loadErrors().length,
-    materiali: loadMaterials().length,
     magazzino: warehouseCount,
     'marca/modello': loadBrands().length,
     'tipologie guasto': loadFaultTypes().length,
