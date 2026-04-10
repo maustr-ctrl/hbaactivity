@@ -1382,6 +1382,7 @@ function updateOfflineBanner() {
 async function handleOnline() {
   _isOnline = true;
   updateOfflineBanner();
+  if (odConnected) setOdStatus(true, 'Connesso');
   if (!odConnected) return;
   if (!hasPendingSync()) return;
 
@@ -1446,6 +1447,7 @@ async function handleOnline() {
 function handleOffline() {
   _isOnline = false;
   updateOfflineBanner();
+  setOdStatus(false, 'Offline');
   showToast('⚠ Connessione persa — modalità offline attiva', true);
 }
 
