@@ -1385,43 +1385,62 @@ async function handleOnline() {
   if (!odConnected) return;
   if (!hasPendingSync()) return;
 
-  // Show sync dialog
-  const div = document.createElement('div');
-  div.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:99999;display:flex;align-items:center;justify-content:center;';
-  div.innerHTML = `
-    <div style="background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:28px;max-width:420px;width:90%;">
-      <h3 style="font-family:var(--font-head);font-size:1.1rem;font-weight:700;margin-bottom:10px;">🔄 Connessione ripristinata</h3>
-      <p style="color:var(--muted);font-size:0.85rem;margin-bottom:20px;line-height:1.6;">
-        Hai modifiche locali non sincronizzate.<br>
-        Cosa vuoi fare?
-      </p>
-      <div style="display:flex;gap:10px;flex-direction:column;">
-        <button class="btn btn-primary" id="syncUpBtn">⬆ Carica modifiche locali su OneDrive</button>
-        <button class="btn btn-outline" id="syncDownBtn">⬇ Scarica dati da OneDrive (sovrascrive locale)</button>
-        <button class="btn btn-ghost" id="syncSkipBtn">Decido dopo</button>
-      </div>
-    </div>`;
-  document.body.appendChild(div);
+  // Smart merge: combine local and cloud data
+  try {
+    showToast('🔄 Sincronizzazione in corso…');
+    const local  = loadRepairs();
+    const cloud  = await odRead(OD_CONFIG.repairsPath) || [];
 
-  document.getElementById('syncUpBtn').onclick = async () => {
-    div.remove();
-    try {
-      const local = loadRepairs();
-      await odWrite(OD_CONFIG.repairsPath, local);
-      setPendingSync(false);
-      showToast('✓ Modifiche locali caricate su OneDrive');
-    } catch(e) { showToast('Errore upload: ' + e.message, true); }
-  };
-  document.getElementById('syncDownBtn').onclick = async () => {
-    div.remove();
-    try {
-      await loadFromOneDrive();
-      setPendingSync(false);
-      renderCurrentView();
-      showToast('✓ Dati aggiornati da OneDrive');
-    } catch(e) { showToast('Errore download: ' + e.message, true); }
-  };
-  document.getElementById('syncSkipBtn').onclick = () => div.remove();
+    // Merge: for each record use the most recently modified version
+    const merged = {};
+    [...cloud, ...local].forEach(r => {
+      const existing = merged[r.id];
+      if (!existing) {
+        merged[r.id] = r;
+      } else {
+        // Compare updatedAt or createdAt timestamps
+        const tsNew = r.updatedAt || r.createdAt || '';
+        const tsOld = existing.updatedAt || existing.createdAt || '';
+        if (tsNew > tsOld) merged[r.id] = r;
+      }
+    });
+
+    const mergedArr = Object.values(merged).sort((a,b) => a.id - b.id);
+
+    // Write merged result to OneDrive and local
+    await odWrite(OD_CONFIG.repairsPath, mergedArr);
+    localStorage.setItem(STORE_KEY, JSON.stringify(mergedArr));
+    setPendingSync(false);
+    showToast('✓ Sincronizzazione completata — ' + mergedArr.length + ' attività unite');
+    renderCurrentView();
+  } catch(e) {
+    showToast('Errore sincronizzazione: ' + e.message, true);
+    // Fallback dialog
+    const div = document.createElement('div');
+    div.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:99999;display:flex;align-items:center;justify-content:center;';
+    div.innerHTML = `
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:28px;max-width:420px;width:90%;">
+        <h3 style="font-family:var(--font-head);font-size:1.1rem;font-weight:700;margin-bottom:10px;">⚠ Errore sincronizzazione automatica</h3>
+        <p style="color:var(--muted);font-size:0.85rem;margin-bottom:20px;line-height:1.6;">
+          Non è stato possibile unire i dati automaticamente.<br>Scegli come procedere:
+        </p>
+        <div style="display:flex;gap:10px;flex-direction:column;">
+          <button class="btn btn-primary" id="syncUpBtn">⬆ Usa dati locali (sovrascrive OneDrive)</button>
+          <button class="btn btn-outline" id="syncDownBtn">⬇ Usa dati OneDrive (sovrascrive locale)</button>
+          <button class="btn btn-ghost" id="syncSkipBtn">Decido dopo</button>
+        </div>
+      </div>`;
+    document.body.appendChild(div);
+    document.getElementById('syncUpBtn').onclick = async () => {
+      div.remove();
+      try { await odWrite(OD_CONFIG.repairsPath, loadRepairs()); setPendingSync(false); showToast('✓ Dati locali caricati'); } catch(e2) { showToast('Errore: ' + e2.message, true); }
+    };
+    document.getElementById('syncDownBtn').onclick = async () => {
+      div.remove();
+      try { await loadFromOneDrive(); setPendingSync(false); renderCurrentView(); showToast('✓ Dati OneDrive caricati'); } catch(e2) { showToast('Errore: ' + e2.message, true); }
+    };
+    document.getElementById('syncSkipBtn').onclick = () => div.remove();
+  }
 }
 
 function handleOffline() {
@@ -1513,6 +1532,10 @@ function setOdStatus(ok, label) {
 let currentView = 'dashboard';
 function showView(view) {
   currentView = view;
+  // Reset location view tracker when navigating away from location views
+  if (!['laboratorio','remoto','impianto'].includes(view)) {
+    _currentLocationView = '';
+  }
   document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
   const navEl = document.getElementById('nav-' + view);
   if (navEl) navEl.classList.add('active');
@@ -3131,10 +3154,10 @@ function saveRepair(editId) {
 
   if (editId !== null && editId !== 'null') {
     const idx = repairs.findIndex(r=>r.id==editId);
-    if (idx>=0) repairs[idx] = { ...repairs[idx], ...data };
+    if (idx>=0) repairs[idx] = { ...repairs[idx], ...data, updatedAt: new Date().toISOString() };
   } else {
     const newId = repairs.length ? Math.max(...repairs.map(r=>r.id)) + 1 : 1001;
-    repairs.push({ id: newId, createdAt: new Date().toISOString(), ...data });
+    repairs.push({ id: newId, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), ...data });
   }
 
   // Log the operation
