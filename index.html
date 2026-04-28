@@ -1301,23 +1301,76 @@ async function disconnectOneDrive() {
 // ── GRAPH API ─────────────────────────────────────────────────
 async function odRead(path) {
   const token = await getOdToken();
+  // Try direct drive access first (works for owner)
   const url = `https://graph.microsoft.com/v1.0/drives/${OD_CONFIG.sharedDriveId}/root:/${path}:/content`;
   const res = await fetch(url, { headers: { 'Authorization': 'Bearer ' + token } });
   if (res.status === 404) return null;
-  if (!res.ok) throw new Error('Lettura OneDrive fallita: ' + res.status);
-  return res.json();
+  if (res.ok) return res.json();
+  // Fallback: search in sharedWithMe (works for guests with shared folder)
+  const filename = path.split('/').pop();
+  const sharedRes = await fetch(
+    `https://graph.microsoft.com/v1.0/me/drive/sharedWithMe`,
+    { headers: { 'Authorization': 'Bearer ' + token } }
+  );
+  if (sharedRes.ok) {
+    const shared = await sharedRes.json();
+    const item = (shared.value || []).find(i =>
+      i.name === 'HbaActivity' || (i.remoteItem && i.remoteItem.parentReference && i.remoteItem.parentReference.driveId === OD_CONFIG.sharedDriveId)
+    );
+    if (item) {
+      const remDriveId = item.remoteItem?.parentReference?.driveId || item.parentReference?.driveId;
+      const remItemId  = item.remoteItem?.id || item.id;
+      if (remDriveId) {
+        const fileRes = await fetch(
+          `https://graph.microsoft.com/v1.0/drives/${remDriveId}/items/${remItemId}:/${filename}:/content`,
+          { headers: { 'Authorization': 'Bearer ' + token } }
+        );
+        if (fileRes.status === 404) return null;
+        if (fileRes.ok) return fileRes.json();
+      }
+    }
+  }
+  throw new Error('Lettura OneDrive fallita: ' + res.status);
 }
 
 async function odWrite(path, data) {
   const token = await getOdToken();
+  // Try direct drive access first (works for owner)
   const url = `https://graph.microsoft.com/v1.0/drives/${OD_CONFIG.sharedDriveId}/root:/${path}:/content`;
   const res = await fetch(url, {
     method: 'PUT',
     headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
     body: JSON.stringify(data)
   });
-  if (!res.ok) throw new Error('Scrittura OneDrive fallita: ' + res.status);
-  return res.json();
+  if (res.ok) return res.json();
+  // Fallback: write via sharedWithMe
+  const filename = path.split('/').pop();
+  const sharedRes = await fetch(
+    `https://graph.microsoft.com/v1.0/me/drive/sharedWithMe`,
+    { headers: { 'Authorization': 'Bearer ' + token } }
+  );
+  if (sharedRes.ok) {
+    const shared = await sharedRes.json();
+    const item = (shared.value || []).find(i =>
+      i.name === 'HbaActivity' || (i.remoteItem && i.remoteItem.parentReference && i.remoteItem.parentReference.driveId === OD_CONFIG.sharedDriveId)
+    );
+    if (item) {
+      const remDriveId = item.remoteItem?.parentReference?.driveId || item.parentReference?.driveId;
+      const remItemId  = item.remoteItem?.id || item.id;
+      if (remDriveId) {
+        const fileRes = await fetch(
+          `https://graph.microsoft.com/v1.0/drives/${remDriveId}/items/${remItemId}:/${filename}:/content`,
+          {
+            method: 'PUT',
+            headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+            body: JSON.stringify(data)
+          }
+        );
+        if (fileRes.ok) return fileRes.json();
+      }
+    }
+  }
+  throw new Error('Scrittura OneDrive fallita: ' + res.status);
 }
 
 async function syncToOneDrive(data) {
