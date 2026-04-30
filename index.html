@@ -3848,7 +3848,6 @@ function saveWordTemplate(base64) {
   localStorage.setItem(WORD_TEMPLATE_KEY, base64);
   // Also save to OneDrive if connected
   if (odConnected) {
-    // Convert base64 to binary and upload as .docx
     const binary = atob(base64);
     const bytes = new Uint8Array(binary.length);
     for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
@@ -3859,9 +3858,9 @@ function saveWordTemplate(base64) {
         body: bytes.buffer
       }).then(r => {
         if (r.ok) showToast('✓ Template salvato su OneDrive');
-        else showToast('Template salvato localmente (OneDrive non disponibile)', false);
-      });
-    }).catch(() => {});
+        else r.json().then(e => { showToast('Errore salvataggio template: ' + (e.error?.message || r.status), true); console.error('Template save error:', e); });
+      }).catch(e => { showToast('Errore connessione template: ' + e.message, true); console.error('Template save error:', e); });
+    }).catch(e => { console.error('Token error:', e); });
   }
 }
 function clearWordTemplate() {
