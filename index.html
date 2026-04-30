@@ -1301,8 +1301,8 @@ async function disconnectOneDrive() {
 // ── GRAPH API ─────────────────────────────────────────────────
 async function odRead(path) {
   const token = await getOdToken();
-  // Try direct drive access first (works for owner)
-  const url = `https://graph.microsoft.com/v1.0/drives/${OD_CONFIG.sharedDriveId}/root:/${path}:/content`;
+  // Try me/drive first (works for owner with personal account)
+  const url = `https://graph.microsoft.com/v1.0/me/drive/root:/${path}:/content`;
   const res = await fetch(url, { headers: { 'Authorization': 'Bearer ' + token } });
   if (res.status === 404) return null;
   if (res.ok) return res.json();
@@ -1314,9 +1314,7 @@ async function odRead(path) {
   );
   if (sharedRes.ok) {
     const shared = await sharedRes.json();
-    const item = (shared.value || []).find(i =>
-      i.name === 'HbaActivity' || (i.remoteItem && i.remoteItem.parentReference && i.remoteItem.parentReference.driveId === OD_CONFIG.sharedDriveId)
-    );
+    const item = (shared.value || []).find(i => i.name === 'HbaActivity');
     if (item) {
       const remDriveId = item.remoteItem?.parentReference?.driveId || item.parentReference?.driveId;
       const remItemId  = item.remoteItem?.id || item.id;
@@ -1335,8 +1333,8 @@ async function odRead(path) {
 
 async function odWrite(path, data) {
   const token = await getOdToken();
-  // Try direct drive access first (works for owner)
-  const url = `https://graph.microsoft.com/v1.0/drives/${OD_CONFIG.sharedDriveId}/root:/${path}:/content`;
+  // Try me/drive first (works for owner with personal account)
+  const url = `https://graph.microsoft.com/v1.0/me/drive/root:/${path}:/content`;
   const res = await fetch(url, {
     method: 'PUT',
     headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
@@ -1351,9 +1349,7 @@ async function odWrite(path, data) {
   );
   if (sharedRes.ok) {
     const shared = await sharedRes.json();
-    const item = (shared.value || []).find(i =>
-      i.name === 'HbaActivity' || (i.remoteItem && i.remoteItem.parentReference && i.remoteItem.parentReference.driveId === OD_CONFIG.sharedDriveId)
-    );
+    const item = (shared.value || []).find(i => i.name === 'HbaActivity');
     if (item) {
       const remDriveId = item.remoteItem?.parentReference?.driveId || item.parentReference?.driveId;
       const remItemId  = item.remoteItem?.id || item.id;
