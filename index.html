@@ -1302,6 +1302,7 @@ async function connectOneDrive() {
     showToast('✓ Connesso come ' + (user.displayName || user.mail));
     await loadFromOneDrive();
     startAutoSync();
+    autoSync(); // sync immediato all'avvio
     renderCurrentView();
 
   } catch(e) {
@@ -1391,7 +1392,7 @@ function updateSyncIndicator() {
   const el = document.getElementById('lastSyncTime');
   if (el && _lastSyncTime) {
     const d = new Date(_lastSyncTime);
-    el.textContent = 'Aggiornato ' + d.toLocaleTimeString('it-IT', {hour:'2-digit', minute:'2-digit', second:'2-digit'});
+    el.textContent = 'Ultimo aggiornamento ' + d.toLocaleTimeString('it-IT', {hour:'2-digit', minute:'2-digit', second:'2-digit'});
   }
 }
 
@@ -1620,6 +1621,8 @@ function setOdStatus(ok, label) {
       await getOdToken(); // will use refresh token
       odConnected = true;
       setOdStatus(true, 'Connesso');
+      startAutoSync();
+      autoSync(); // sync immediato all'avvio
     } catch(e) {
       sessionStorage.removeItem('od_refresh');
       setOdStatus(false, 'Non connesso');
