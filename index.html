@@ -1301,6 +1301,7 @@ async function connectOneDrive() {
     setOdStatus(true, 'Connesso');
     showToast('✓ Connesso come ' + (user.displayName || user.mail));
     await loadFromOneDrive();
+    await loadWordTemplateFromOneDrive();
     startAutoSync();
     autoSync(); // sync immediato all'avvio
     renderCurrentView();
@@ -1436,8 +1437,36 @@ async function autoSync() {
       _lastSyncTime = new Date().toISOString();
       updateSyncIndicator();
     }
+    // Check if template has been updated on OneDrive
+    await syncTemplateFromOneDrive();
   } catch(e) {
     console.warn('AutoSync failed:', e.message);
+  }
+}
+
+let _templateLastModified = null;
+async function syncTemplateFromOneDrive() {
+  try {
+    const token = await getSharedToken();
+    // Get file metadata to check lastModifiedDateTime
+    const res = await fetch(
+      'https://graph.microsoft.com/v1.0/me/drive/root:/HbaActivity/template.docx?$select=lastModifiedDateTime',
+      { headers: { 'Authorization': 'Bearer ' + token } }
+    );
+    if (!res.ok) return;
+    const meta = await res.json();
+    const lastMod = meta.lastModifiedDateTime;
+    if (!lastMod) return;
+    // Download only if newer than what we have
+    if (_templateLastModified !== lastMod) {
+      const updated = await loadWordTemplateFromOneDrive();
+      if (updated) {
+        _templateLastModified = lastMod;
+        console.log('Template aggiornato da OneDrive:', lastMod);
+      }
+    }
+  } catch(e) {
+    console.warn('Template sync failed:', e.message);
   }
 }
 
@@ -1621,6 +1650,7 @@ function setOdStatus(ok, label) {
       await getOdToken(); // will use refresh token
       odConnected = true;
       setOdStatus(true, 'Connesso');
+      await loadWordTemplateFromOneDrive();
       startAutoSync();
       autoSync(); // sync immediato all'avvio
     } catch(e) {
@@ -3790,8 +3820,49 @@ const DOC_PASSWORD_KEY  = 'hbaactivity_doc_password';
 function loadWordTemplate() {
   return localStorage.getItem(WORD_TEMPLATE_KEY) || null;
 }
+
+async function loadWordTemplateFromOneDrive() {
+  if (!odConnected) return false;
+  try {
+    const token = await getSharedToken();
+    const res = await fetch('https://graph.microsoft.com/v1.0/me/drive/root:/HbaActivity/template.docx:/content', {
+      headers: { 'Authorization': 'Bearer ' + token }
+    });
+    if (!res.ok) return false;
+    const buffer = await res.arrayBuffer();
+    const bytes = new Uint8Array(buffer);
+    let binary = '';
+    const chunkSize = 8192;
+    for (let i = 0; i < bytes.length; i += chunkSize) {
+      binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+    }
+    const base64 = btoa(binary);
+    try { localStorage.setItem(WORD_TEMPLATE_KEY, base64); } catch(e) {}
+    return true;
+  } catch(e) {
+    console.warn('Template OneDrive load failed:', e);
+    return false;
+  }
+}
 function saveWordTemplate(base64) {
   localStorage.setItem(WORD_TEMPLATE_KEY, base64);
+  // Also save to OneDrive if connected
+  if (odConnected) {
+    // Convert base64 to binary and upload as .docx
+    const binary = atob(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    getSharedToken().then(token => {
+      fetch('https://graph.microsoft.com/v1.0/me/drive/root:/HbaActivity/template.docx:/content', {
+        method: 'PUT',
+        headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' },
+        body: bytes.buffer
+      }).then(r => {
+        if (r.ok) showToast('✓ Template salvato su OneDrive');
+        else showToast('Template salvato localmente (OneDrive non disponibile)', false);
+      });
+    }).catch(() => {});
+  }
 }
 function clearWordTemplate() {
   localStorage.removeItem(WORD_TEMPLATE_KEY);
