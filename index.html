@@ -605,6 +605,7 @@
     <div class="auth-badge">
       <div class="auth-dot" id="syncDot"></div>
       <span id="syncLabel">Non connesso</span>
+      <span id="lastSyncTime" style="font-size:0.7rem;color:var(--muted);margin-left:6px;"></span>
     </div>
     <div id="roleBadgeHeader"></div>
     <button class="btn btn-outline btn-sm" onclick="showView('cloud')" id="btnConfigurazione">⚙ Configurazione</button>
@@ -1300,6 +1301,7 @@ async function connectOneDrive() {
     setOdStatus(true, 'Connesso');
     showToast('✓ Connesso come ' + (user.displayName || user.mail));
     await loadFromOneDrive();
+    startAutoSync();
     renderCurrentView();
 
   } catch(e) {
@@ -1311,6 +1313,7 @@ async function connectOneDrive() {
 }
 
 async function disconnectOneDrive() {
+  stopAutoSync();
   odConnected = false;
   _odToken = null;
   _odTokenExpiry = 0;
@@ -1376,6 +1379,79 @@ async function loadFromOneDrive() {
 
 
 
+
+// ── AUTO SYNC ─────────────────────────────────────────────────
+let _lastActivity = Date.now();
+let _syncTimer = null;
+const SYNC_INTERVAL_MS  = 60 * 1000;  // sync ogni 60 secondi se attivo
+const INACTIVE_LIMIT_MS = 5 * 60 * 1000; // stop sync dopo 5 min inattività
+let _lastSyncTime = null;
+
+function updateSyncIndicator() {
+  const el = document.getElementById('lastSyncTime');
+  if (el && _lastSyncTime) {
+    const d = new Date(_lastSyncTime);
+    el.textContent = 'Aggiornato ' + d.toLocaleTimeString('it-IT', {hour:'2-digit', minute:'2-digit', second:'2-digit'});
+  }
+}
+
+function recordActivity() {
+  _lastActivity = Date.now();
+}
+
+async function autoSync() {
+  if (!odConnected) return;
+  const inactive = Date.now() - _lastActivity;
+  if (inactive > INACTIVE_LIMIT_MS) return; // utente inattivo — skip
+  try {
+    const cloud = await odRead(OD_CONFIG.repairsPath);
+    if (cloud && Array.isArray(cloud)) {
+      const local = loadRepairs();
+      // Only update if cloud has changed
+      if (JSON.stringify(cloud) !== JSON.stringify(local)) {
+        // Merge instead of overwrite to preserve any local pending changes
+        if (hasPendingSync()) {
+          // Merge cloud + local
+          const merged = {};
+          [...cloud, ...local].forEach(r => {
+            const ex = merged[r.id];
+            if (!ex) { merged[r.id] = r; return; }
+            const tsNew = r.updatedAt || r.createdAt || '';
+            const tsOld = ex.updatedAt || ex.createdAt || '';
+            if (tsNew > tsOld) merged[r.id] = r;
+          });
+          const mergedArr = Object.values(merged).sort((a,b) => a.id - b.id);
+          localStorage.setItem(STORE_KEY, JSON.stringify(mergedArr));
+        } else {
+          localStorage.setItem(STORE_KEY, JSON.stringify(cloud));
+        }
+        updateSideCount();
+        // Refresh current view silently if not in form
+        const overlay = document.getElementById('modalOverlay');
+        if (!overlay || !overlay.classList.contains('open')) {
+          renderCurrentView();
+        }
+      }
+      _lastSyncTime = new Date().toISOString();
+      updateSyncIndicator();
+    }
+  } catch(e) {
+    console.warn('AutoSync failed:', e.message);
+  }
+}
+
+function startAutoSync() {
+  if (_syncTimer) clearInterval(_syncTimer);
+  _syncTimer = setInterval(autoSync, SYNC_INTERVAL_MS);
+  // Track user activity
+  ['mousemove','keydown','click','scroll','touchstart'].forEach(ev => {
+    document.addEventListener(ev, recordActivity, { passive: true });
+  });
+}
+
+function stopAutoSync() {
+  if (_syncTimer) { clearInterval(_syncTimer); _syncTimer = null; }
+}
 // ── OFFLINE / SYNC MANAGEMENT ────────────────────────────────
 let _isOnline = navigator.onLine;
 const PENDING_SYNC_KEY = 'hbaactivity_pending_sync';
