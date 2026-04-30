@@ -1302,6 +1302,8 @@ async function connectOneDrive() {
     showToast('✓ Connesso come ' + (user.displayName || user.mail));
     await loadFromOneDrive();
     await loadWordTemplateFromOneDrive();
+    await loadListsFromOneDrive();
+    await loadWarehouseFromOneDrive();
     startAutoSync();
     autoSync(); // sync immediato all'avvio
     renderCurrentView();
@@ -1437,11 +1439,126 @@ async function autoSync() {
       _lastSyncTime = new Date().toISOString();
       updateSyncIndicator();
     }
-    // Check if template has been updated on OneDrive
+    // Check if template/lists/warehouse have been updated on OneDrive
     await syncTemplateFromOneDrive();
+    await syncListsFromOneDrive();
+    await loadWarehouseFromOneDrive();
   } catch(e) {
     console.warn('AutoSync failed:', e.message);
   }
+}
+
+
+// ── LISTS & WAREHOUSE SYNC ───────────────────────────────────
+const LISTS_OD_PATH     = 'HbaActivity/lists.json';
+const WAREHOUSE_OD_PATH = 'HbaActivity/master.xlsx';
+let _warehouseOdLastMod = null;
+
+async function saveListsToOneDrive() {
+  if (!odConnected) return;
+  try {
+    const token = await getSharedToken();
+    const lists = {
+      clients:    loadClients(),
+      techs:      loadTechnicians(),
+      errors:     loadErrors(),
+      brands:     loadBrands(),
+      faultTypes: loadFaultTypes(),
+      updatedAt:  new Date().toISOString()
+    };
+    const res = await fetch(
+      `https://graph.microsoft.com/v1.0/me/drive/root:/${LISTS_OD_PATH}:/content`,
+      { method: 'PUT', headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' }, body: JSON.stringify(lists) }
+    );
+    if (res.ok) showToast('✓ Liste salvate su OneDrive');
+    else showToast('Errore salvataggio liste: ' + res.status, true);
+  } catch(e) { showToast('Errore liste OneDrive: ' + e.message, true); }
+}
+
+async function loadListsFromOneDrive() {
+  if (!odConnected) return false;
+  try {
+    const token = await getSharedToken();
+    const res = await fetch(
+      `https://graph.microsoft.com/v1.0/me/drive/root:/${LISTS_OD_PATH}:/content`,
+      { headers: { 'Authorization': 'Bearer ' + token } }
+    );
+    if (!res.ok) return false;
+    const lists = await res.json();
+    if (lists.clients)    { localStorage.setItem('hbaactivity_clients',     JSON.stringify(lists.clients));    updateClientCount(); }
+    if (lists.techs)      { localStorage.setItem('hbaactivity_technicians', JSON.stringify(lists.techs));      updateTechCount(); }
+    if (lists.errors)     { localStorage.setItem('hbaactivity_errors',      JSON.stringify(lists.errors)); }
+    if (lists.brands)     { localStorage.setItem('hbaactivity_brands',      JSON.stringify(lists.brands)); }
+    if (lists.faultTypes) { localStorage.setItem('hbaactivity_fault_types', JSON.stringify(lists.faultTypes)); }
+    return true;
+  } catch(e) { console.warn('loadListsFromOneDrive failed:', e); return false; }
+}
+
+async function saveWarehouseToOneDrive(file) {
+  if (!odConnected) return;
+  try {
+    const token = await getSharedToken();
+    const buffer = await file.arrayBuffer();
+    const res = await fetch(
+      `https://graph.microsoft.com/v1.0/me/drive/root:/${WAREHOUSE_OD_PATH}:/content`,
+      { method: 'PUT', headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }, body: buffer }
+    );
+    if (res.ok) showToast('✓ Magazzino salvato su OneDrive');
+    else showToast('Errore salvataggio magazzino: ' + res.status, true);
+  } catch(e) { showToast('Errore magazzino OneDrive: ' + e.message, true); }
+}
+
+async function loadWarehouseFromOneDrive() {
+  if (!odConnected) return false;
+  try {
+    const token = await getSharedToken();
+    // Check last modified
+    const metaRes = await fetch(
+      `https://graph.microsoft.com/v1.0/me/drive/root:/${WAREHOUSE_OD_PATH}?$select=lastModifiedDateTime`,
+      { headers: { 'Authorization': 'Bearer ' + token } }
+    );
+    if (!metaRes.ok) return false;
+    const meta = await metaRes.json();
+    const lastMod = meta.lastModifiedDateTime;
+    if (_warehouseOdLastMod === lastMod) return true; // already up to date
+    // Download and parse
+    const res = await fetch(
+      `https://graph.microsoft.com/v1.0/me/drive/root:/${WAREHOUSE_OD_PATH}:/content`,
+      { headers: { 'Authorization': 'Bearer ' + token } }
+    );
+    if (!res.ok) return false;
+    const buffer = await res.arrayBuffer();
+    const wb = XLSX.read(buffer, { type: 'array' });
+    const sheetName = wb.SheetNames.find(n => n.toLowerCase().includes('magazzino')) || wb.SheetNames[0];
+    const ws = wb.Sheets[sheetName];
+    const rows = XLSX.utils.sheet_to_json(ws, { header: 1 });
+    const warehouseRows = rows
+      .filter(r => r[0] || r[1])
+      .map(r => ({ code: String(r[0]||'').trim(), name: String(r[1]||'').trim() }))
+      .filter(r => r.code || r.name);
+    _warehouseMemory = warehouseRows;
+    _warehouseOdLastMod = lastMod;
+    console.log('Magazzino caricato da OneDrive:', warehouseRows.length, 'articoli');
+    return true;
+  } catch(e) { console.warn('loadWarehouseFromOneDrive failed:', e); return false; }
+}
+
+let _listsLastMod = null;
+async function syncListsFromOneDrive() {
+  try {
+    const token = await getSharedToken();
+    const metaRes = await fetch(
+      `https://graph.microsoft.com/v1.0/me/drive/root:/${LISTS_OD_PATH}?$select=lastModifiedDateTime`,
+      { headers: { 'Authorization': 'Bearer ' + token } }
+    );
+    if (!metaRes.ok) return;
+    const meta = await metaRes.json();
+    const lastMod = meta.lastModifiedDateTime;
+    if (_listsLastMod !== lastMod) {
+      const updated = await loadListsFromOneDrive();
+      if (updated) { _listsLastMod = lastMod; console.log('Liste aggiornate da OneDrive'); }
+    }
+  } catch(e) { console.warn('Lists sync failed:', e.message); }
 }
 
 let _templateLastModified = null;
@@ -1651,6 +1768,8 @@ function setOdStatus(ok, label) {
       odConnected = true;
       setOdStatus(true, 'Connesso');
       await loadWordTemplateFromOneDrive();
+      await loadListsFromOneDrive();
+      await loadWarehouseFromOneDrive();
       startAutoSync();
       autoSync(); // sync immediato all'avvio
     } catch(e) {
@@ -3561,6 +3680,7 @@ function importMasterFile(file) {
         // Two columns: col A = codice, col B = descrizione
         let warehouseRows = rows.map(r => ({ code: String(r[0]||'').trim(), name: String(r[1]||'').trim() })).filter(r => r.code || r.name);
         saveWarehouse(warehouseRows);
+        if (odConnected) saveWarehouseToOneDrive(file);
         results.push(warehouseRows.length + ' ' + sheetMap[mapped].label);
         found++;
         return;
@@ -3592,6 +3712,9 @@ function importMasterFile(file) {
 
     // Analyze differences with existing repairs and propose updates
     analyzeAndProposeLavorazioniUpdate(previousLists);
+
+    // Save lists to OneDrive
+    if (odConnected) saveListsToOneDrive();
 
     renderCurrentView();
     showToast('✓ Importati: ' + results.join(' · '));
